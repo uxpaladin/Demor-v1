@@ -9,6 +9,7 @@
   https://github.com/mobizt/Firebase-ESP-Client/blob/main/examples/RTDB/Basic/Basic.ino
 */
 
+#include <sstream>
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #if defined(ESP32)
@@ -25,9 +26,10 @@
 
 #include <SPI.h>
 #include <MFRC522.h>
-#define SS_PIN 2  // D4
-#define RST_PIN 0 // D3
-#define LED_PIN 5 // D1
+#define SS_PIN 2   // D4
+#define RST_PIN 0  // D3
+#define LED_PIN 4  // D2
+#define FAIL_PIN 5 // D1
 
 // Insert your network credentials
 #define WIFI_SSID "Apto 1208"
@@ -53,7 +55,7 @@ unsigned long sendDataPrevMillis = 0;
 int count = 0;
 bool signupOK = false;
 String username = "null";
-bool unlockDoor = true;
+bool unlockDoor = false;
 String password = "null";
 String cardId = "null";
 String atStartTime = "null";
@@ -64,6 +66,14 @@ bool doorbellPressed = false;
 unsigned long unlockTime = 0;
 bool relockDoorFlag = false;
 unsigned long updateLockState = 0;
+bool grantAccess = false;
+unsigned long scanTimer = 0;
+std::stringstream sstm;
+std::stringstream sstm2;
+std::string query;
+std::string query2;
+std::string sValue;
+String scanValue;
 
 ICACHE_RAM_ATTR void doorBell()
 {
@@ -121,9 +131,8 @@ void setup()
   Firebase.reconnectWiFi(true);
   pinMode(15, INPUT);
   pinMode(LED_PIN, OUTPUT);
-  // pinMode(2, INPUT);
+  pinMode(FAIL_PIN, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(15), doorBell, FALLING);
-  // attachInterrupt(digitalPinToInterrupt(2), cardAccess, RISING);
 
   SPI.begin();
   mfrc522.PCD_Init();
@@ -160,12 +169,7 @@ void loop()
     unlockTime = 0;
     relockDoorFlag = false;
   }
-  /*    if ( ! mfrc522.PICC_IsNewCardPresent()) {
-      Serial.println("No card");
-      return;
-    }
 
-    Serial.println("Present"); */
   if (doorbellPressed)
   {
     if (Firebase.RTDB.setBool(&fbdo, "profile/flags/0/doorBell", doorbellPressed))
@@ -174,20 +178,21 @@ void loop()
     }
   }
 
-  if (mfrc522.PICC_IsNewCardPresent())
+  if (mfrc522.PICC_IsNewCardPresent() && (millis() - scanTimer) > 6000) // previene que puedas escanear la tarjeta multiples veces seguidas
   {
-    // mfrc522.PICC_RequestA();
+    scanTimer = millis();
     if (mfrc522.PICC_ReadCardSerial())
     {
       Serial.println("card true");
+      Firebase.RTDB.setBool(&fbdo, "profile/flags/0/cardScan", true);
       cardScan = true;
+      // mfrc522.PICC_HaltA();
     }
   }
 
   if (cardScan)
   {
-    String scanValue = "";
-    byte letter;
+    scanValue = "";
     for (byte i = 0; i < mfrc522.uid.size; i++)
     {
       Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
@@ -196,52 +201,66 @@ void loop()
       scanValue.concat(String(mfrc522.uid.uidByte[i], HEX));
     }
     scanValue.toUpperCase();
-    Firebase.RTDB.getString(&fbdo, "profile/cards/0/id");
-    String idValue = fbdo.stringData();
-    Serial.println(idValue);
+    //  Firebase.RTDB.getString(&fbdo, "profile/cards/0/id");
+    //  String idValue = fbdo.stringData();
+    Serial.println("");
+    Serial.println(scanValue.length());
+    scanValue = scanValue.substring(1, 12);
+    // Serial.println(scanValue);
+    // Serial.println("after 1st scan print");
     cardScan = false;
+    Firebase.RTDB.getInt(&fbdo, "profile/numCards");
+    sValue = "profile/cards/";
+    for (int z = 0; z < fbdo.intData(); z++)
+    {
+      // String query = "";
+      sstm.str("");
+      sstm << sValue << z << "/id";
+      query = sstm.str();
+      sstm2.str("");
+      sstm2 << sValue << z << "/enabled";
+      query2 = sstm2.str();
+      Firebase.RTDB.getString(&fbdo, query);
+      Serial.println(fbdo.stringData());
+      if (scanValue.compareTo(fbdo.stringData()) == 0)
+      {
+        Serial.println("success");
+        Serial.println(query2.c_str());
+        Firebase.RTDB.getBool(&fbdo, query2);
+        Serial.println(fbdo.boolData());
+        if (fbdo.boolData())
+        {
+          unlockDoor = true;
+          return;
+        }
+        else
+        {
+          Serial.println("not enabled");
+        }
+      }
+      Serial.println("card not approved");
+    }
+    Serial.println("fail");
+    digitalWrite(FAIL_PIN, HIGH);
+    delay(500);
+    digitalWrite(FAIL_PIN, LOW);
+    delay(500);
+    digitalWrite(FAIL_PIN, HIGH);
+    delay(500);
+    digitalWrite(FAIL_PIN, LOW);
+    delay(500);
+    digitalWrite(FAIL_PIN, HIGH);
+    delay(500);
+    digitalWrite(FAIL_PIN, LOW);
+    delay(500);
   }
 
   if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 15000 || sendDataPrevMillis == 0))
   {
     sendDataPrevMillis = millis();
-    // Write an Int number on the database path test/int
-    /* if (Firebase.RTDB.setInt(&fbdo, "test/int", count)){
-       Serial.println("PASSED");
-       Serial.println("PATH: " + fbdo.dataPath());
-       Serial.println("TYPE: " + fbdo.dataType());
-     }
-     else {
-       Serial.println("FAILED");
-       Serial.println("REASON: " + fbdo.errorReason());
-     }
-     count++;
-
-     // Write an Float number on the database path test/float
-     if (Firebase.RTDB.setFloat(&fbdo, "test/float", 0.01 + random(0,100))){
-       Serial.println("PASSED");
-       Serial.println("PATH: " + fbdo.dataPath());
-       Serial.println("TYPE: " + fbdo.dataType());
-     }
-     else {
-       Serial.println("FAILED");
-       Serial.println("REASON: " + fbdo.errorReason());
-     }*/
-
     if (Firebase.RTDB.getBool(&fbdo, "profile/flags/0/unlockDoor"))
     {
       unlockDoor = fbdo.boolData();
-      Serial.println(unlockDoor);
     }
-    // if (Firebase.RTDB.getArray(&fbdo, "profile/listOfEvents"))
-    // {
-    // deserializeJson(document,fbdo.jsonData().stringValue);
-    // document=fbdo.jsonData();
-    // const char* holder=document[username];
-    // Serial.println(fbdo.dataPath());
-    // FirebaseJsonArray &data = fbdo.jsonArray();
-    // const char index='0';
-    // Serial.println(data.getStr(index));
-    //}
   }
 }
