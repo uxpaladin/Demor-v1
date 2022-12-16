@@ -1,13 +1,3 @@
-/*
-  Rui Santos
-  Complete project details at our blog.
-    - ESP32: https://RandomNerdTutorials.com/esp32-firebase-realtime-database/
-    - ESP8266: https://RandomNerdTutorials.com/esp8266-nodemcu-firebase-realtime-database/
-  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
-  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-  Based in the RTDB Basic Example by Firebase-ESP-Client library by mobizt
-  https://github.com/mobizt/Firebase-ESP-Client/blob/main/examples/RTDB/Basic/Basic.ino
-*/
 
 #include <sstream>
 #include <ArduinoJson.h>
@@ -18,6 +8,10 @@
 #include <ESP8266WiFi.h>
 #endif
 #include <Firebase_ESP_Client.h>
+#include <TimeLib.h>
+#include <Ethernet.h>
+#include <EthernetUdp.h>
+#include <WiFiUdp.h>
 
 // Provide the token generation process info.
 #include "addons/TokenHelper.h"
@@ -31,14 +25,11 @@
 #define LED_PIN 4  // D2
 #define FAIL_PIN 5 // D1
 
-// Insert your network credentials
 #define WIFI_SSID "Apto 1208"
 #define WIFI_PASSWORD "lafayette13"
 
-// Insert Firebase project API Key
 #define API_KEY "AIzaSyDqLj5ncPkpaS3L4IoI9ATQmgRCa3uXOVo"
 
-// Insert RTDB URLefine the RTDB URL */
 #define DATABASE_URL "https://fir-c0626-default-rtdb.firebaseio.com/"
 
 // Define Firebase Data object
@@ -47,7 +38,6 @@ FirebaseAuth auth;
 FirebaseConfig config;
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-// MFRC522::MIFARE_Key key;
 int statuss = 0;
 int out = 0;
 
@@ -58,8 +48,8 @@ String username = "null";
 bool unlockDoor = false;
 String password = "null";
 String cardId = "null";
-String atStartTime = "null";
-String atEndTime = "null";
+int startTime = 0;
+int endTime = 0;
 bool sendNotificacion = false;
 bool cardScan = false;
 bool doorbellPressed = false;
@@ -74,12 +64,22 @@ std::string query;
 std::string query2;
 std::string sValue;
 String scanValue;
+FirebaseJsonArray event;
+std::stringstream sstm3;
+std::string query3;
+std::stringstream sstm4;
+std::string query4;
+IPAddress timeServer(132, 163, 97, 6);
+const int timeZone = -3;
+// EthernetUDP Udp;
+WiFiUDP Udp;
+unsigned int localPort = 8888;
+int loopInt = 0;
 
 ICACHE_RAM_ATTR void doorBell()
 {
-  Serial.println("is alive!!");
+  Serial.println("doorbel pressed");
   doorbellPressed = true;
-
   return;
 }
 
@@ -90,6 +90,56 @@ void cardAccess()
   {
     cardScan = false;
   }
+}
+
+const int NTP_PACKET_SIZE = 48;     // NTP time is in the first 48 bytes of message
+byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
+void sendNTPpacket(IPAddress &address)
+{
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011; // LI, Version, Mode
+  packetBuffer[1] = 0;          // Stratum, or type of clock
+  packetBuffer[2] = 6;          // Polling Interval
+  packetBuffer[3] = 0xEC;       // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12] = 49;
+  packetBuffer[13] = 0x4E;
+  packetBuffer[14] = 49;
+  packetBuffer[15] = 52;
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  Udp.beginPacket(address, 123); // NTP requests are to port 123
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  Udp.endPacket();
+}
+time_t getNtpTime()
+{
+  while (Udp.parsePacket() > 0)
+    ; // discard any previously received packets
+  Serial.println("Transmit NTP Request");
+  sendNTPpacket(timeServer);
+  uint32_t beginWait = millis();
+  while (millis() - beginWait < 5000)
+  {
+    int size = Udp.parsePacket();
+    if (size >= NTP_PACKET_SIZE)
+    {
+      Serial.println("Receive NTP Response");
+      Udp.read(packetBuffer, NTP_PACKET_SIZE); // read packet into the buffer
+      unsigned long secsSince1900;
+      // convert four bytes starting at location 40 to a long integer
+      secsSince1900 = (unsigned long)packetBuffer[40] << 24;
+      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+      secsSince1900 |= (unsigned long)packetBuffer[43];
+      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+    }
+  }
+  Serial.println("No NTP Response :-(");
+  return 0; // return 0 if unable to get the time
 }
 
 void setup()
@@ -106,6 +156,16 @@ void setup()
   Serial.print("Connected with IP: ");
   Serial.println(WiFi.localIP());
   Serial.println();
+
+  Udp.begin(localPort);
+  setSyncProvider(getNtpTime);
+
+  while (timeStatus() == timeNotSet)
+  {
+    Serial.println("waitinggg");
+  }
+
+  Serial.println(hour());
 
   /* Assign the api key (required) */
   config.api_key = API_KEY;
@@ -137,9 +197,6 @@ void setup()
   SPI.begin();
   mfrc522.PCD_Init();
   mfrc522.PCD_DumpVersionToSerial();
-  /* for (byte i = 0; i < 6; i++) {
-    key.keyByte[i] = 0xFF;
-  } */
 }
 
 void loop()
@@ -157,6 +214,7 @@ void loop()
   {
     digitalWrite(LED_PIN, HIGH);
     unlockTime = millis();
+    Firebase.RTDB.setBool(&fbdo, "profile/flags/0/unlockDoor", unlockDoor);
     Serial.println("door unlocked");
     unlockDoor = false;
     relockDoorFlag = true;
@@ -186,7 +244,7 @@ void loop()
       Serial.println("card true");
       Firebase.RTDB.setBool(&fbdo, "profile/flags/0/cardScan", true);
       cardScan = true;
-      // mfrc522.PICC_HaltA();
+      // Firebase.RTDB.pushArray(&fbdo, "/profile/listOfEvents", &event);
     }
   }
 
@@ -201,19 +259,20 @@ void loop()
       scanValue.concat(String(mfrc522.uid.uidByte[i], HEX));
     }
     scanValue.toUpperCase();
-    //  Firebase.RTDB.getString(&fbdo, "profile/cards/0/id");
-    //  String idValue = fbdo.stringData();
     Serial.println("");
     Serial.println(scanValue.length());
     scanValue = scanValue.substring(1, 12);
-    // Serial.println(scanValue);
-    // Serial.println("after 1st scan print");
     cardScan = false;
     Firebase.RTDB.getInt(&fbdo, "profile/numCards");
     sValue = "profile/cards/";
-    for (int z = 0; z < fbdo.intData(); z++)
+
+    /* Firebase.RTDB.getArray(&fbdo, "profile/listOfEvents");
+    event = fbdo.jsonArray();
+    Firebase.RTDB.pushArray(&fbdo, "profile/listOfEvents", &event);
+    */
+    loopInt = fbdo.intData();
+    for (int z = 0; z < loopInt; z++)
     {
-      // String query = "";
       sstm.str("");
       sstm << sValue << z << "/id";
       query = sstm.str();
@@ -226,12 +285,32 @@ void loop()
       {
         Serial.println("success");
         Serial.println(query2.c_str());
+        sstm3.str("");
+        sstm3 << "profile/flags/0/" << scanValue.c_str();
+        query3 = sstm3.str();
+        Firebase.RTDB.setBool(&fbdo, query3, true);
         Firebase.RTDB.getBool(&fbdo, query2);
         Serial.println(fbdo.boolData());
         if (fbdo.boolData())
         {
-          unlockDoor = true;
-          return;
+          sstm4.str("");
+          sstm4 << sValue << z << "/accessTimes/0/startTime";
+          query4 = sstm4.str();
+          Firebase.RTDB.getInt(&fbdo, query4);
+          startTime = fbdo.intData();
+          sstm4.str("");
+          sstm4 << sValue << z << "/accessTimes/0/endTime";
+          query4 = sstm4.str();
+          Firebase.RTDB.getInt(&fbdo, query4);
+          endTime = fbdo.intData();
+          if (hour() <= endTime && hour() >= startTime)
+          {
+            unlockDoor = true;
+            return;
+          }
+          else {
+            Serial.println("not in access time");
+          }
         }
         else
         {
@@ -264,3 +343,5 @@ void loop()
     }
   }
 }
+
+// send an NTP request to the time server at the given address
